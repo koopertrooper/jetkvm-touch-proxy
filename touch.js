@@ -68,7 +68,6 @@
     tx: 0,
     ty: 0,
     keyboardOpen: false,
-    sticky: { ControlLeft: false, AltLeft: false, MetaLeft: false, ShiftLeft: false },
   };
   if (SPEEDS[state.speedIndex] === undefined) state.speedIndex = 1;
 
@@ -249,13 +248,10 @@
     return zoomEl;
   }
 
-  // Bottom of what you can see, in client coordinates (above the iOS
-  // keyboard and our key bar).
+  // Bottom of what you can see, in client coordinates (above the iOS keyboard).
   function visibleBottom() {
     var vv = window.visualViewport;
-    var b = vv ? vv.offsetTop + vv.height : window.innerHeight;
-    if (state.keyboardOpen && keyBar) b -= keyBar.offsetHeight;
-    return b;
+    return vv ? vv.offsetTop + vv.height : window.innerHeight;
   }
 
   function clampPan() {
@@ -708,30 +704,18 @@
     return US_KEYS[ch] || null;
   }
 
-  var MOD_KEYS = { ControlLeft: "Control", AltLeft: "Alt", MetaLeft: "Meta", ShiftLeft: "Shift" };
-
   function keyEvent(type, code, key) {
     document.dispatchEvent(
       new KeyboardEvent(type, { code: code, key: key, bubbles: true, cancelable: true, composed: true }),
     );
   }
 
-  // Press a key with the sticky modifiers (and Shift if needed) held around it.
+  // Press a key, with Shift held around it if needed.
   function tapKey(code, key, shift) {
-    var mods = [];
-    Object.keys(state.sticky).forEach(function (m) {
-      if (state.sticky[m]) mods.push(m);
-    });
-    if (shift && mods.indexOf("ShiftLeft") < 0) mods.push("ShiftLeft");
-    mods.forEach(function (m) {
-      keyEvent("keydown", m, MOD_KEYS[m]);
-    });
+    if (shift) keyEvent("keydown", "ShiftLeft", "Shift");
     keyEvent("keydown", code, key);
     keyEvent("keyup", code, key);
-    mods.reverse().forEach(function (m) {
-      keyEvent("keyup", m, MOD_KEYS[m]);
-    });
-    clearStickyModifiers();
+    if (shift) keyEvent("keyup", "ShiftLeft", "Shift");
   }
 
   function typeText(text) {
@@ -746,15 +730,6 @@
       var k = keyFor(ch);
       if (k) tapKey(k[0], ch, k[1]);
     }
-  }
-
-  function clearStickyModifiers() {
-    var changed = false;
-    Object.keys(state.sticky).forEach(function (m) {
-      if (state.sticky[m]) changed = true;
-      state.sticky[m] = false;
-    });
-    if (changed) renderKeyBar();
   }
 
   var input = null;
@@ -849,13 +824,10 @@
       if (sheet && sheet.style.display !== "none") closeSheet();
       parkInput();
       state.keyboardOpen = true;
-      renderKeyBar();
       setTimeout(onViewportChange, 300);
     });
     input.addEventListener("blur", function () {
       state.keyboardOpen = false;
-      clearStickyModifiers();
-      renderKeyBar();
       setTimeout(onViewportChange, 300);
     });
     document.body.appendChild(input);
@@ -903,7 +875,7 @@
     "#jkt-input{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;font-size:16px;border:0;padding:0;margin:0;",
     "resize:none;background:transparent;color:transparent;caret-color:transparent;z-index:2147483647;pointer-events:none;",
     "-webkit-user-select:text;user-select:text;outline:none;-webkit-tap-highlight-color:transparent}",
-    // The button, menu and key bar are placed by script inside the visible
+    // The button and menu are placed by script inside the visible
     // area (window.visualViewport), which differs from the page size on iOS.
     "#jkt-fab{position:fixed;left:0;top:0;width:48px;height:48px;border-radius:50%;",
     "border:0;background:#2563eb;color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.35);z-index:2147483645;display:none;",
@@ -923,14 +895,6 @@
     "#jkt-sheet button .jkt-val{color:rgba(255,255,255,.55)}",
     "#jkt-sheet .jkt-cancel{font-weight:600}",
     "#jkt-sheet .jkt-warn{color:#fca5a5;font-size:14px;padding:12px;text-align:center;line-height:1.35}",
-    // One row of keys that always fits the width; a "more" key flips pages.
-    "#jkt-keys{position:fixed;left:0;top:0;width:100%;box-sizing:border-box;z-index:2147483645;display:none;gap:4px;padding:5px 4px;",
-    "background:rgba(28,28,30,.97);font:500 14px/1 -apple-system,system-ui,sans-serif;touch-action:none;",
-    "-webkit-user-select:none;user-select:none}",
-    "#jkt-keys button{flex:1 1 0;min-width:0;height:38px;border:0;border-radius:6px;background:#48484a;color:#fff;font:inherit;",
-    "padding:0 1px;white-space:nowrap;overflow:hidden;-webkit-tap-highlight-color:transparent;cursor:pointer}",
-    "#jkt-keys button.jkt-aux{background:#2c2c2e}",
-    "#jkt-keys button.jkt-on{background:#2563eb}",
   ].join("");
   (document.head || document.documentElement).appendChild(style);
 
@@ -960,7 +924,6 @@
   // ---- Menu button and action sheet --------------------------------------
   var fab = null;
   var sheet = null;
-  var keyBar = null;
 
   function mouseModeIsRelative() {
     try {
@@ -1084,110 +1047,6 @@
     else parkInput();
   }
 
-  // Keys the iPhone keyboard lacks, shown just above it while it is open.
-  // Each page fits one row on the narrowest iPhones; "•••" flips pages and
-  // "⌄" closes the keyboard.
-  var KEY_PAGES = [
-    [
-      { label: "Esc", code: "Escape" },
-      { label: "Tab", code: "Tab" },
-      { label: "Ctrl", mod: "ControlLeft" },
-      { label: "Alt", mod: "AltLeft" },
-      { label: "\u2190", code: "ArrowLeft" },
-      { label: "\u2191", code: "ArrowUp" },
-      { label: "\u2193", code: "ArrowDown" },
-      { label: "\u2192", code: "ArrowRight" },
-    ],
-    [
-      { label: "Win", mod: "MetaLeft" },
-      { label: "Shift", mod: "ShiftLeft" },
-      { label: "Del", code: "Delete" },
-      { label: "Home", code: "Home" },
-      { label: "End", code: "End" },
-      { label: "PgUp", code: "PageUp" },
-      { label: "PgDn", code: "PageDown" },
-      { label: "C-A-Del", combo: ["ControlLeft", "AltLeft", "Delete"] },
-    ],
-    [
-      { label: "F1", code: "F1" },
-      { label: "F2", code: "F2" },
-      { label: "F3", code: "F3" },
-      { label: "F4", code: "F4" },
-      { label: "F5", code: "F5" },
-      { label: "F6", code: "F6" },
-    ],
-    [
-      { label: "F7", code: "F7" },
-      { label: "F8", code: "F8" },
-      { label: "F9", code: "F9" },
-      { label: "F10", code: "F10" },
-      { label: "F11", code: "F11" },
-      { label: "F12", code: "F12" },
-    ],
-  ];
-  var keyPage = 0;
-
-  function renderKeyBar() {
-    if (!keyBar) return;
-    keyBar.style.display = state.keyboardOpen ? "flex" : "none";
-    if (!state.keyboardOpen) return;
-    keyBar.textContent = "";
-    var keys = KEY_PAGES[keyPage].concat([
-      { label: "\u2022\u2022\u2022", page: true, aux: true },
-      { label: "\u2304", hide: true, aux: true },
-    ]);
-    keys.forEach(function (k) {
-      var b = el("button", k.mod && state.sticky[k.mod] ? "jkt-on" : k.aux ? "jkt-aux" : "", k.label);
-      if (k.page) b.setAttribute("aria-label", "More keys");
-      if (k.hide) b.setAttribute("aria-label", "Hide keyboard");
-      b.type = "button";
-      // Act on touchend and cancel the default, so the tap never takes focus
-      // from the text field (which would close the keyboard).
-      var touchedAt = 0;
-      b.addEventListener("touchstart", function (ev) {
-        ev.preventDefault();
-      }, { passive: false });
-      b.addEventListener("touchend", function (ev) {
-        ev.preventDefault();
-        touchedAt = Date.now();
-        act();
-      }, { passive: false });
-      b.addEventListener("mousedown", function (ev) {
-        ev.preventDefault();
-      });
-      b.addEventListener("click", function (ev) {
-        ev.preventDefault();
-        if (Date.now() - touchedAt < 800) return;
-        act();
-      });
-      function act() {
-        if (k.hide) return hideKeyboard();
-        if (k.page) {
-          keyPage = (keyPage + 1) % KEY_PAGES.length;
-          renderKeyBar();
-          return;
-        }
-        if (k.mod) {
-          state.sticky[k.mod] = !state.sticky[k.mod];
-          renderKeyBar();
-          return;
-        }
-        if (k.combo) {
-          k.combo.forEach(function (c) {
-            keyEvent("keydown", c, c);
-          });
-          k.combo.slice().reverse().forEach(function (c) {
-            keyEvent("keyup", c, c);
-          });
-          return;
-        }
-        tapKey(k.code, k.code, false);
-      }
-      keyBar.appendChild(b);
-    });
-    positionKeyBar();
-  }
-
   // The part of the page you can actually see. On iOS this can be smaller
   // than, and offset from, the page itself (browser bars, keyboard, zoom).
   function visibleRect() {
@@ -1199,15 +1058,8 @@
   function layoutOverlays() {
     var v = visibleRect();
     var bottom = v.top + v.height;
-    if (keyBar && state.keyboardOpen) {
-      keyBar.style.left = v.left + "px";
-      keyBar.style.width = v.width + "px";
-      var h = keyBar.offsetHeight || 48;
-      keyBar.style.top = bottom - h + "px";
-      bottom -= h;
-    }
     if (fab) {
-      // Always sit above the key bar, inside the visible area.
+      // Bottom-right of the visible area, so it stays above the keyboard.
       fab.style.left = v.left + v.width - 48 - 12 + "px";
       fab.style.top = bottom - 48 - 12 + "px";
     }
@@ -1218,10 +1070,6 @@
       sheet.style.height = v.height + "px";
       sheet.classList.toggle("jkt-compact", v.height < 560);
     }
-  }
-
-  function positionKeyBar() {
-    layoutOverlays();
   }
 
   function onViewportChange() {
@@ -1249,25 +1097,39 @@
       fab.type = "button";
       fab.setAttribute("aria-label", "Touch menu");
       fab.innerHTML = MENU_ICON; // fixed markup, no user data
+      // Don't take focus from the keyboard field when tapped, so the menu
+      // can offer "Hide keyboard" while typing.
+      var fabTouchedAt = 0;
+      fab.addEventListener("touchstart", function (ev) {
+        ev.preventDefault();
+      }, { passive: false });
+      fab.addEventListener("touchend", function (ev) {
+        ev.preventDefault();
+        fabTouchedAt = Date.now();
+        openSheet();
+      }, { passive: false });
+      fab.addEventListener("mousedown", function (ev) {
+        ev.preventDefault();
+      });
       fab.addEventListener("click", function (ev) {
         ev.preventDefault();
         ev.stopPropagation();
-        openSheet();
+        if (Date.now() - fabTouchedAt > 800) openSheet();
       });
       sheet = el("div");
       sheet.id = "jkt-sheet";
       sheet.addEventListener("click", function (ev) {
         if (ev.target === sheet) closeSheet();
       });
-      keyBar = el("div");
-      keyBar.id = "jkt-keys";
+      sheet.addEventListener("mousedown", function (ev) {
+        if (state.keyboardOpen) ev.preventDefault();
+      });
       createInput();
       document.body.appendChild(fab);
       document.body.appendChild(sheet);
-      document.body.appendChild(keyBar);
     }
     // Keep our elements attached and only show the menu on the remote-control screen.
-    [cursorEl, fab, sheet, keyBar, input].forEach(function (n) {
+    [cursorEl, fab, sheet, input].forEach(function (n) {
       if (n && !n.isConnected) document.body.appendChild(n);
     });
     var video = getVideo();
