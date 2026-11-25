@@ -1,10 +1,10 @@
 // JetKVM touch layer, added to the JetKVM page by the touch proxy.
 //
-// The JetKVM UI only reacts to desktop mouse events on its <video> element.
-// This script catches finger gestures on that element before the UI sees
-// them and replays them as the mouse events the UI already handles
-// (mousemove, pointerdown/pointerup with a buttons mask, and wheel).
-// A real mouse or trackpad on a computer is left alone.
+// The JetKVM UI only reacts to desktop mouse and keyboard events. This script
+// catches finger gestures on its <video> element before the UI sees them and
+// replays them as the events the UI already handles (mousemove,
+// pointerdown/pointerup with a buttons mask, wheel, keydown/keyup).
+// A real mouse, trackpad or keyboard on a computer is left alone.
 //
 // Requires the JetKVM mouse mode "Absolute" (the default).
 
@@ -20,6 +20,9 @@
   var DOUBLE_TAP_PX = 40;
   var LONG_PRESS_MS = 550; // hold still this long = right click
   var SCROLL_STEP_PX = 16; // two-finger movement per wheel notch
+  var PINCH_START_RATIO = 0.12; // finger spread change that starts a pinch
+  var MAX_ZOOM = 5;
+  var EDGE_MARGIN_PX = 30; // keep the cursor this far inside the visible area
   var COMPAT_MOUSE_BLOCK_MS = 800; // ignore browser mouse emulation after touch
   var SPEEDS = [0.6, 1, 1.6, 2.4];
   var CURSOR_SHOW_MS = 600; // the position ring fades this long after the last move
@@ -49,9 +52,8 @@
     mode: load("mode", "trackpad"), // "trackpad" | "direct"
     speedIndex: load("speedIndex", 1),
     invertScroll: load("invertScroll", false),
-    collapsed: load("collapsed", false),
     showMarker: load("showMarker", true),
-    nx: 0.5, // cursor position, 0..1 across the visible video picture
+    nx: 0.5, // cursor position, 0..1 across the remote screen
     ny: 0.5,
     buttons: 0,
     lastTouchAt: 0,
@@ -60,41 +62,52 @@
     lastTapAt: 0,
     lastTapX: 0,
     lastTapY: 0,
+    // Local zoom of the video: translate(tx, ty) scale(zoom), origin top-left.
+    zoom: 1,
+    tx: 0,
+    ty: 0,
+    keyboardOpen: false,
+    sticky: { ControlLeft: false, AltLeft: false, MetaLeft: false, ShiftLeft: false },
   };
   if (SPEEDS[state.speedIndex] === undefined) state.speedIndex = 1;
 
   var gesture = null;
+  var isTouchDevice = "ontouchstart" in window || navigator.maxTouchPoints > 0;
 
   // ---- Geometry ---------------------------------------------------------
   function getVideo() {
     return document.querySelector("video");
   }
 
-  // The picture inside the <video> element (object-fit: contain adds bars).
-  function contentRect(video) {
-    var r = video.getBoundingClientRect();
-    var vw = video.videoWidth;
-    var vh = video.videoHeight;
-    var left = r.left;
-    var top = r.top;
-    var width = r.width;
-    var height = r.height;
-    if (vw && vh && r.width && r.height) {
-      var elAspect = r.width / r.height;
-      var vidAspect = vw / vh;
-      if (elAspect > vidAspect) {
-        width = r.height * vidAspect;
-        left = r.left + (r.width - width) / 2;
-      } else if (elAspect < vidAspect) {
-        height = r.width / vidAspect;
-        top = r.top + (r.height - height) / 2;
-      }
-    }
-    return { left: left, top: top, width: width, height: height, el: r };
+  function clamp(v, lo, hi) {
+    return v < lo ? lo : v > hi ? hi : v;
+  }
+  function clamp01(v) {
+    return clamp(v, 0, 1);
   }
 
-  function clamp01(v) {
-    return v < 0 ? 0 : v > 1 ? 1 : v;
+  // The picture inside a box of the given size (object-fit: contain adds bars).
+  function containBox(w, h, vw, vh) {
+    var box = { x: 0, y: 0, w: w, h: h };
+    if (vw && vh && w && h) {
+      var elAspect = w / h;
+      var vidAspect = vw / vh;
+      if (elAspect > vidAspect) {
+        box.w = h * vidAspect;
+        box.x = (w - box.w) / 2;
+      } else if (elAspect < vidAspect) {
+        box.h = w / vidAspect;
+        box.y = (h - box.h) / 2;
+      }
+    }
+    return box;
+  }
+
+  // The picture on screen, in client coordinates (includes the zoom).
+  function contentRect(video) {
+    var r = video.getBoundingClientRect();
+    var b = containBox(r.width, r.height, video.videoWidth, video.videoHeight);
+    return { left: r.left + b.x, top: r.top + b.y, width: b.w, height: b.h };
   }
 
   function setCursorFromClient(video, x, y) {
@@ -110,13 +123,13 @@
   }
 
   // ---- Sending mouse events to the JetKVM UI -----------------------------
-  function withOffsets(ev, video, x, y) {
-    // The UI reads offsetX/offsetY. Safari does not always compute them for
-    // script-made events, so set them explicitly.
-    var r = video.getBoundingClientRect();
+  function withOffsets(ev, video) {
+    // The UI reads offsetX/offsetY in the video's own (unzoomed) layout
+    // coordinates. Set them from the cursor position so zoom never shifts clicks.
+    var b = containBox(video.clientWidth, video.clientHeight, video.videoWidth, video.videoHeight);
     try {
-      Object.defineProperty(ev, "offsetX", { value: x - r.left });
-      Object.defineProperty(ev, "offsetY", { value: y - r.top });
+      Object.defineProperty(ev, "offsetX", { value: b.x + state.nx * b.w });
+      Object.defineProperty(ev, "offsetY", { value: b.y + state.ny * b.h });
     } catch (e) {
       /* read-only on this browser; the native value is used */
     }
@@ -157,7 +170,7 @@
       screenY: p.y,
       buttons: state.buttons,
     });
-    video.dispatchEvent(withOffsets(ev, video, p.x, p.y));
+    video.dispatchEvent(withOffsets(ev, video));
     state.lastMoveAt = Date.now();
     drawCursor();
     clearTimeout(state.fadeTimer);
@@ -173,9 +186,7 @@
     if (!video) return;
     state.buttons |= mask;
     var p = cursorClient(video);
-    video.dispatchEvent(
-      withOffsets(makePointerEvent("pointerdown", p.x, p.y, state.buttons, buttonIndex(mask)), video, p.x, p.y),
-    );
+    video.dispatchEvent(withOffsets(makePointerEvent("pointerdown", p.x, p.y, state.buttons, buttonIndex(mask)), video));
   }
 
   function release(mask) {
@@ -183,9 +194,7 @@
     if (!video) return;
     state.buttons &= ~mask;
     var p = cursorClient(video);
-    video.dispatchEvent(
-      withOffsets(makePointerEvent("pointerup", p.x, p.y, state.buttons, buttonIndex(mask)), video, p.x, p.y),
-    );
+    video.dispatchEvent(withOffsets(makePointerEvent("pointerup", p.x, p.y, state.buttons, buttonIndex(mask)), video));
   }
 
   function click(mask) {
@@ -205,17 +214,124 @@
     var video = getVideo();
     if (!video) return;
     var p = cursorClient(video);
-    var ev = new WheelEvent("wheel", {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      clientX: p.x,
-      clientY: p.y,
-      deltaX: dx,
-      deltaY: dy,
-      deltaMode: 0,
-    });
-    video.dispatchEvent(ev);
+    video.dispatchEvent(
+      new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: p.x,
+        clientY: p.y,
+        deltaX: dx,
+        deltaY: dy,
+        deltaMode: 0,
+      }),
+    );
+  }
+
+  // ---- Zoom and pan -----------------------------------------------------
+  // The video's parent is scaled, so the picture and JetKVM's own overlays
+  // zoom together. Its parent clips the overflow.
+  var zoomEl = null;
+
+  function getZoomEl() {
+    var video = getVideo();
+    var el = video ? video.parentElement : null;
+    if (el !== zoomEl) {
+      if (zoomEl) zoomEl.style.transform = "";
+      zoomEl = el;
+      if (zoomEl) {
+        zoomEl.style.transformOrigin = "0 0";
+        zoomEl.style.willChange = "transform";
+      }
+      applyZoom();
+    }
+    return zoomEl;
+  }
+
+  // Bottom of what you can see, in client coordinates (above the iOS keyboard).
+  function visibleBottom() {
+    var vv = window.visualViewport;
+    return vv ? vv.offsetTop + vv.height : window.innerHeight;
+  }
+
+  function clampPan() {
+    var el = zoomEl;
+    if (!el) return;
+    var w = el.offsetWidth;
+    var h = el.offsetHeight;
+    var r = el.getBoundingClientRect();
+    var originY = r.top - state.ty;
+    // When the keyboard covers the bottom of the picture, allow panning it up into view.
+    var covered = Math.max(0, originY + h - visibleBottom());
+    state.tx = clamp(state.tx, w - state.zoom * w, 0);
+    state.ty = clamp(state.ty, h - state.zoom * h - covered, 0);
+  }
+
+  function applyZoom() {
+    if (!zoomEl) return;
+    clampPan();
+    if (state.zoom === 1 && state.tx === 0 && state.ty === 0) {
+      zoomEl.style.transform = "";
+    } else {
+      zoomEl.style.transform =
+        "translate(" + state.tx + "px," + state.ty + "px) scale(" + state.zoom + ")";
+    }
+    drawCursor();
+  }
+
+  function resetZoom() {
+    state.zoom = 1;
+    state.tx = 0;
+    state.ty = 0;
+    applyZoom();
+    ensureCursorVisible();
+  }
+
+  // Pan so the cursor stays inside the visible part of the picture.
+  function ensureCursorVisible() {
+    var video = getVideo();
+    var el = getZoomEl();
+    if (!video || !el || !el.parentElement) return;
+    var clip = el.parentElement.getBoundingClientRect();
+    var top = Math.max(clip.top, window.visualViewport ? window.visualViewport.offsetTop : 0);
+    var bottom = Math.min(clip.bottom, visibleBottom());
+    var p = cursorClient(video);
+    var m = EDGE_MARGIN_PX;
+    if (p.x < clip.left + m) state.tx += clip.left + m - p.x;
+    if (p.x > clip.right - m) state.tx -= p.x - (clip.right - m);
+    if (p.y < top + m) state.ty += top + m - p.y;
+    if (p.y > bottom - m) state.ty -= p.y - (bottom - m);
+    applyZoom();
+  }
+
+  function pinchStart(touches) {
+    var el = getZoomEl();
+    if (!el) return null;
+    var a = touches[0];
+    var b = touches[1];
+    var c = centroid(touches);
+    var r = el.getBoundingClientRect();
+    return {
+      dist: Math.max(1, Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)),
+      zoom: state.zoom,
+      // The point of the unzoomed picture that sits under the fingers.
+      localX: (c.x - r.left) / state.zoom,
+      localY: (c.y - r.top) / state.zoom,
+      originX: r.left - state.tx,
+      originY: r.top - state.ty,
+    };
+  }
+
+  function pinchMove(p, touches) {
+    var a = touches[0];
+    var b = touches[1];
+    var c = centroid(touches);
+    var dist = Math.max(1, Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY));
+    state.zoom = clamp((p.zoom * dist) / p.dist, 1, MAX_ZOOM);
+    // Keep the same picture point under the fingers while zooming and moving.
+    state.tx = c.x - p.originX - state.zoom * p.localX;
+    state.ty = c.y - p.originY - state.zoom * p.localY;
+    applyZoom();
   }
 
   // ---- Gesture recognition ----------------------------------------------
@@ -254,6 +370,9 @@
         moved: false,
         held: false, // left button held for this gesture
         consumed: false, // already handled (long press fired)
+        multi: null, // "scroll" | "pinch" once a two-finger gesture is recognised
+        multiStart: null,
+        pinch: null,
         scrollX: 0,
         scrollY: 0,
         multiLast: null,
@@ -286,6 +405,10 @@
     if (e.touches.length > 1) {
       cancelLongPress();
       gesture.multiLast = centroid(e.touches);
+      if (e.touches.length === 2 && !gesture.multi) {
+        gesture.multiStart = gesture.multiLast;
+        gesture.pinch = pinchStart(e.touches);
+      }
     }
     state.lastTouchAt = Date.now();
     e.preventDefault();
@@ -326,7 +449,7 @@
         var accel = Math.min(2.5, 0.5 + v * 1.2);
         var factor = SPEEDS[state.speedIndex] * accel;
         // At 1x, sliding a finger across the picture's width moves the
-        // cursor across the remote screen (more when moving fast).
+        // cursor across the remote screen. Zooming in gives finer control.
         var c = contentRect(video);
         state.nx = clamp01(state.nx + (dx * factor) / Math.max(1, c.width));
         state.ny = clamp01(state.ny + (dy * factor) / Math.max(1, c.height));
@@ -335,6 +458,7 @@
       gesture.lastY = t.clientY;
       gesture.lastAt = now;
       sendMove();
+      if (state.mode === "trackpad") ensureCursorVisible();
       return;
     }
 
@@ -344,10 +468,28 @@
       var mdx = m.x - last.x;
       var mdy = m.y - last.y;
       gesture.multiLast = m;
-      if (!gesture.moved && Math.hypot(m.x - gesture.startX, m.y - gesture.startY) > TAP_SLOP_PX * 2) {
-        gesture.moved = true;
+
+      // Decide once per gesture: fingers spreading/closing = zoom, moving together = scroll.
+      if (!gesture.multi && gesture.pinch && e.touches.length === 2) {
+        var a = e.touches[0];
+        var b = e.touches[1];
+        var d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+        var start = gesture.multiStart || m;
+        if (Math.abs(d / gesture.pinch.dist - 1) > PINCH_START_RATIO) {
+          gesture.multi = "pinch";
+          gesture.pinch = pinchStart(e.touches);
+        } else if (Math.hypot(m.x - start.x, m.y - start.y) > TAP_SLOP_PX * 2) {
+          gesture.multi = "scroll";
+        }
       }
-      if (!gesture.moved) return;
+      if (!gesture.multi) return;
+      gesture.moved = true;
+
+      if (gesture.multi === "pinch") {
+        if (e.touches.length === 2) pinchMove(gesture.pinch, e.touches);
+        return;
+      }
+
       // Natural scrolling: fingers up = page content moves up = scroll down.
       var sign = state.invertScroll ? 1 : -1;
       gesture.scrollY += mdy;
@@ -371,7 +513,9 @@
     e.stopImmediatePropagation();
     state.lastTouchAt = Date.now();
     if (e.touches.length > 0) {
-      if (e.touches.length > 1) gesture.multiLast = centroid(e.touches);
+      gesture.multiLast = centroid(e.touches);
+      // Lifting one finger of a pinch ends the zoom part of the gesture.
+      if (gesture.multi === "pinch" && e.touches.length < 2) gesture.pinch = null;
       return;
     }
 
@@ -380,6 +524,8 @@
     if (g.longPressTimer) clearTimeout(g.longPressTimer);
     var now = Date.now();
     var duration = now - g.startAt;
+
+    if (g.multi === "pinch" && state.zoom < 1.05) resetZoom();
 
     if (e.type === "touchcancel") {
       releaseAll();
@@ -415,9 +561,7 @@
     if (!e.isTrusted) return;
     var video = getVideo();
     if (!video || e.target !== video) return;
-    if (e.pointerType === "touch") {
-      e.stopImmediatePropagation();
-    }
+    if (e.pointerType === "touch") e.stopImmediatePropagation();
   }
 
   function blockCompatMouse(e) {
@@ -450,25 +594,231 @@
     }
   });
 
-  // ---- Styles, cursor dot and toolbar -----------------------------------
-  var isTouchDevice = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+  // ---- Keyboard ---------------------------------------------------------
+  // The phone keyboard types into a hidden text field. Each character is
+  // replayed as US-layout key presses, which the JetKVM page sends on as a
+  // USB keyboard (the same as a physical keyboard on a computer would).
+  var US_KEYS = {
+    " ": ["Space", false],
+    "\n": ["Enter", false],
+    "\t": ["Tab", false],
+    "`": ["Backquote", false],
+    "~": ["Backquote", true],
+    "-": ["Minus", false],
+    _: ["Minus", true],
+    "=": ["Equal", false],
+    "+": ["Equal", true],
+    "[": ["BracketLeft", false],
+    "{": ["BracketLeft", true],
+    "]": ["BracketRight", false],
+    "}": ["BracketRight", true],
+    "\\": ["Backslash", false],
+    "|": ["Backslash", true],
+    ";": ["Semicolon", false],
+    ":": ["Semicolon", true],
+    "'": ["Quote", false],
+    '"': ["Quote", true],
+    ",": ["Comma", false],
+    "<": ["Comma", true],
+    ".": ["Period", false],
+    ">": ["Period", true],
+    "/": ["Slash", false],
+    "?": ["Slash", true],
+  };
+  var SHIFTED_DIGITS = ")!@#$%^&*(";
+  // iOS "smart punctuation" swaps in typographic characters; send the plain ones.
+  var SMART = { "‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "...", " ": " " };
 
+  function keyFor(ch) {
+    if (/^[a-z]$/.test(ch)) return ["Key" + ch.toUpperCase(), false];
+    if (/^[A-Z]$/.test(ch)) return ["Key" + ch, true];
+    if (/^[0-9]$/.test(ch)) return ["Digit" + ch, false];
+    var i = SHIFTED_DIGITS.indexOf(ch);
+    if (i >= 0) return ["Digit" + i, true];
+    return US_KEYS[ch] || null;
+  }
+
+  var MOD_KEYS = { ControlLeft: "Control", AltLeft: "Alt", MetaLeft: "Meta", ShiftLeft: "Shift" };
+
+  function keyEvent(type, code, key) {
+    document.dispatchEvent(
+      new KeyboardEvent(type, { code: code, key: key, bubbles: true, cancelable: true, composed: true }),
+    );
+  }
+
+  // Press a key with the sticky modifiers (and Shift if needed) held around it.
+  function tapKey(code, key, shift) {
+    var mods = [];
+    Object.keys(state.sticky).forEach(function (m) {
+      if (state.sticky[m]) mods.push(m);
+    });
+    if (shift && mods.indexOf("ShiftLeft") < 0) mods.push("ShiftLeft");
+    mods.forEach(function (m) {
+      keyEvent("keydown", m, MOD_KEYS[m]);
+    });
+    keyEvent("keydown", code, key);
+    keyEvent("keyup", code, key);
+    mods.reverse().forEach(function (m) {
+      keyEvent("keyup", m, MOD_KEYS[m]);
+    });
+    clearStickyModifiers();
+  }
+
+  function typeText(text) {
+    for (var i = 0; i < text.length; i++) {
+      var ch = text[i];
+      var plain = SMART[ch];
+      if (plain) {
+        typeText(plain);
+        continue;
+      }
+      if (ch === "\r") continue;
+      var k = keyFor(ch);
+      if (k) tapKey(k[0], ch, k[1]);
+    }
+  }
+
+  function clearStickyModifiers() {
+    var changed = false;
+    Object.keys(state.sticky).forEach(function (m) {
+      if (state.sticky[m]) changed = true;
+      state.sticky[m] = false;
+    });
+    if (changed) renderKeyBar();
+  }
+
+  var input = null;
+  var SENTINEL = "  "; // keeps the field non-empty so Backspace always fires
+
+  function resetInput() {
+    if (!input) return;
+    input.value = SENTINEL;
+    try {
+      input.setSelectionRange(SENTINEL.length, SENTINEL.length);
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  function createInput() {
+    input = document.createElement("textarea");
+    input.id = "jkt-input";
+    input.setAttribute("autocapitalize", "off");
+    input.setAttribute("autocomplete", "off");
+    input.setAttribute("autocorrect", "off");
+    input.setAttribute("spellcheck", "false");
+    input.setAttribute("enterkeyhint", "enter");
+    input.setAttribute("aria-label", "Remote keyboard input");
+    resetInput();
+
+    // Keep the field's own key events away from the JetKVM page, which would
+    // otherwise cancel them before the text arrives.
+    ["keydown", "keyup", "keypress"].forEach(function (t) {
+      input.addEventListener(t, function (e) {
+        e.stopPropagation();
+        // Hardware keyboards and some iOS keys arrive only as keydown.
+        if (t === "keydown" && e.isTrusted) {
+          var special = { Backspace: 1, Enter: 1, Tab: 1, Escape: 1, ArrowLeft: 1, ArrowRight: 1, ArrowUp: 1, ArrowDown: 1 };
+          if (special[e.key] && e.key !== "Backspace" && e.key !== "Enter") {
+            e.preventDefault();
+            tapKey(e.key, e.key, false);
+          }
+        }
+      });
+    });
+
+    input.addEventListener("beforeinput", function (e) {
+      var type = e.inputType || "";
+      if (type === "insertCompositionText") return; // handled on compositionend
+      e.preventDefault();
+      if (type === "insertText" || type === "insertReplacementText" || type === "insertFromPaste") {
+        var text = e.data;
+        if (text == null && e.dataTransfer) text = e.dataTransfer.getData("text/plain");
+        if (type === "insertReplacementText") {
+          // Autocorrect replacing a word: the field is always empty, so just type it.
+        }
+        if (text) typeText(text);
+      } else if (type === "insertLineBreak" || type === "insertParagraph") {
+        tapKey("Enter", "Enter", false);
+      } else if (type.indexOf("deleteContentBackward") === 0 || type.indexOf("deleteWordBackward") === 0) {
+        tapKey("Backspace", "Backspace", false);
+      } else if (type.indexOf("deleteContentForward") === 0 || type.indexOf("deleteWordForward") === 0) {
+        tapKey("Delete", "Delete", false);
+      }
+      resetInput();
+    });
+    input.addEventListener("compositionend", function (e) {
+      if (e.data) typeText(e.data);
+      setTimeout(resetInput, 0);
+    });
+    // Fallback for browsers without beforeinput: diff against the sentinel.
+    input.addEventListener("input", function () {
+      var v = input.value;
+      if (v === SENTINEL) return;
+      if (v.length < SENTINEL.length) tapKey("Backspace", "Backspace", false);
+      else if (v.indexOf(SENTINEL) === 0) typeText(v.slice(SENTINEL.length));
+      resetInput();
+    });
+    input.addEventListener("focus", function () {
+      state.keyboardOpen = true;
+      renderKeyBar();
+      setTimeout(onViewportChange, 300);
+    });
+    input.addEventListener("blur", function () {
+      state.keyboardOpen = false;
+      clearStickyModifiers();
+      renderKeyBar();
+      setTimeout(onViewportChange, 300);
+    });
+    document.body.appendChild(input);
+  }
+
+  // Must run inside a tap handler: iOS only opens the keyboard for a user action.
+  function showKeyboard() {
+    if (!input) return;
+    resetInput();
+    input.focus({ preventScroll: true });
+  }
+  function hideKeyboard() {
+    if (input) input.blur();
+  }
+
+  // ---- Styles -----------------------------------------------------------
   var style = document.createElement("style");
-  style.textContent =
-    "video{touch-action:none!important;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}" +
-    "#jkt-cursor{position:fixed;left:0;top:0;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;box-sizing:border-box;" +
-    "background:transparent;border:1.5px solid rgba(255,255,255,.9);box-shadow:0 0 0 1px rgba(0,0,0,.6);" +
-    "pointer-events:none;z-index:2147483646;display:none;opacity:0;transition:opacity .3s}" +
-    "#jkt-bar{position:fixed;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));z-index:2147483647;display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100vw - 20px);" +
-    "align-items:center;font:600 13px/1 -apple-system,system-ui,sans-serif;touch-action:manipulation;-webkit-user-select:none;user-select:none}" +
-    "#jkt-bar button{appearance:none;border:0;border-radius:999px;padding:9px 11px;white-space:nowrap;background:rgba(17,24,39,.82);color:#fff;" +
-    "font:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent}" +
-    "#jkt-bar button.jkt-on{background:rgba(37,99,235,.92)}" +
-    "#jkt-bar .jkt-warn{background:rgba(185,28,28,.92);color:#fff;border-radius:8px;padding:8px 10px;max-width:220px;line-height:1.3}";
+  style.textContent = [
+    "video{touch-action:none!important;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}",
+    "#jkt-cursor{position:fixed;left:0;top:0;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;box-sizing:border-box;",
+    "background:transparent;border:1.5px solid rgba(255,255,255,.9);box-shadow:0 0 0 1px rgba(0,0,0,.6);",
+    "pointer-events:none;z-index:2147483645;display:none;opacity:0;transition:opacity .3s}",
+    // Hidden text field: 16px font stops iOS from zooming the page when it gets focus.
+    "#jkt-input{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;font-size:16px;border:0;padding:0;margin:0;",
+    "resize:none;background:transparent;color:transparent;caret-color:transparent;z-index:-1}",
+    "#jkt-fab{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom));width:52px;height:52px;border-radius:50%;",
+    "border:0;background:#2563eb;color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.35);z-index:2147483646;display:none;",
+    "align-items:center;justify-content:center;touch-action:manipulation;-webkit-tap-highlight-color:transparent;cursor:pointer;padding:0}",
+    "#jkt-fab svg{width:24px;height:24px}",
+    "#jkt-sheet{position:fixed;inset:0;z-index:2147483647;display:none;background:rgba(0,0,0,.35);",
+    "font:400 19px/1.2 -apple-system,system-ui,sans-serif;touch-action:manipulation;-webkit-user-select:none;user-select:none}",
+    "#jkt-sheet .jkt-panel{position:absolute;left:8px;right:8px;bottom:calc(8px + env(safe-area-inset-bottom));max-width:480px;margin:0 auto}",
+    "#jkt-sheet .jkt-group{background:rgba(44,44,46,.96);border-radius:14px;overflow:hidden;margin-top:8px}",
+    "#jkt-sheet button{display:block;width:100%;border:0;background:transparent;color:#3b82f6;font:inherit;padding:16px 12px;",
+    "text-align:center;-webkit-tap-highlight-color:transparent;cursor:pointer}",
+    "#jkt-sheet button+button{border-top:1px solid rgba(255,255,255,.12)}",
+    "#jkt-sheet button .jkt-val{color:rgba(255,255,255,.55)}",
+    "#jkt-sheet .jkt-cancel{font-weight:600}",
+    "#jkt-sheet .jkt-warn{color:#fca5a5;font-size:14px;padding:12px;text-align:center;line-height:1.35}",
+    "#jkt-keys{position:fixed;left:0;right:0;top:0;z-index:2147483646;display:none;gap:6px;padding:6px 8px;overflow-x:auto;",
+    "background:rgba(28,28,30,.96);font:500 15px/1 -apple-system,system-ui,sans-serif;touch-action:manipulation;",
+    "-webkit-user-select:none;user-select:none;scrollbar-width:none}",
+    "#jkt-keys::-webkit-scrollbar{display:none}",
+    "#jkt-keys button{flex:0 0 auto;min-width:40px;height:36px;border:0;border-radius:6px;background:#48484a;color:#fff;font:inherit;",
+    "padding:0 10px;-webkit-tap-highlight-color:transparent;cursor:pointer}",
+    "#jkt-keys button.jkt-on{background:#2563eb}",
+  ].join("");
   (document.head || document.documentElement).appendChild(style);
 
+  // ---- Cursor ring --------------------------------------------------------
   var cursorEl = null;
-  var bar = null;
 
   function drawCursor() {
     if (!cursorEl) return;
@@ -490,6 +840,11 @@
     cursorEl.style.opacity = Date.now() - state.lastMoveAt < CURSOR_SHOW_MS ? "1" : "0";
   }
 
+  // ---- Menu button and action sheet --------------------------------------
+  var fab = null;
+  var sheet = null;
+  var keyBar = null;
+
   function mouseModeIsRelative() {
     try {
       var s = JSON.parse(window.localStorage.getItem("settings") || "{}");
@@ -499,94 +854,237 @@
     }
   }
 
-  function button(label, title, onClick) {
-    var b = document.createElement("button");
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+
+  function sheetButton(label, value, onTap, cls) {
+    var b = el("button", cls || "");
     b.type = "button";
-    b.textContent = label;
-    b.title = title;
+    b.appendChild(document.createTextNode(label));
+    if (value) {
+      b.appendChild(document.createTextNode(": "));
+      b.appendChild(el("span", "jkt-val", value));
+    }
     b.addEventListener("click", function (ev) {
       ev.preventDefault();
       ev.stopPropagation();
-      onClick();
-      renderBar();
+      onTap();
     });
     return b;
   }
 
-  function renderBar() {
-    if (!bar) return;
-    bar.textContent = "";
-    if (state.collapsed) {
-      bar.appendChild(
-        button("Touch", "Show touch controls", function () {
-          state.collapsed = false;
-          save("collapsed", false);
-        }),
-      );
-      return;
-    }
+  function closeSheet() {
+    if (sheet) sheet.style.display = "none";
+  }
+
+  function openSheet() {
+    renderSheet();
+    sheet.style.display = "block";
+  }
+
+  function renderSheet() {
+    sheet.textContent = "";
+    var panel = el("div", "jkt-panel");
+    var g1 = el("div", "jkt-group");
     if (mouseModeIsRelative()) {
-      var w = document.createElement("div");
-      w.className = "jkt-warn";
-      w.textContent = "Touch control needs Mouse mode set to Absolute in JetKVM settings.";
-      bar.appendChild(w);
+      g1.appendChild(el("div", "jkt-warn", "Touch control needs Mouse mode set to Absolute in the JetKVM settings."));
     }
-    var modeBtn = button(state.mode === "trackpad" ? "Trackpad" : "Direct", "Switch touch mode", function () {
-      state.mode = state.mode === "trackpad" ? "direct" : "trackpad";
-      save("mode", state.mode);
-      drawCursor();
-    });
-    modeBtn.className = "jkt-on";
-    bar.appendChild(modeBtn);
+    g1.appendChild(
+      sheetButton(state.keyboardOpen ? "Hide keyboard" : "Show keyboard", null, function () {
+        closeSheet();
+        if (state.keyboardOpen) hideKeyboard();
+        else showKeyboard();
+      }),
+    );
+    g1.appendChild(
+      sheetButton("Touch mode", state.mode === "trackpad" ? "Trackpad" : "Direct", function () {
+        state.mode = state.mode === "trackpad" ? "direct" : "trackpad";
+        save("mode", state.mode);
+        drawCursor();
+        renderSheet();
+      }),
+    );
     if (state.mode === "trackpad") {
-      bar.appendChild(
-        button(SPEEDS[state.speedIndex] + "x", "Trackpad speed", function () {
+      g1.appendChild(
+        sheetButton("Trackpad speed", SPEEDS[state.speedIndex] + "x", function () {
           state.speedIndex = (state.speedIndex + 1) % SPEEDS.length;
           save("speedIndex", state.speedIndex);
+          renderSheet();
         }),
       );
-    }
-    if (state.mode === "trackpad") {
-      bar.appendChild(
-        button(state.showMarker ? "Ring on" : "Ring off", "Show or hide the cursor ring", function () {
+      g1.appendChild(
+        sheetButton("Cursor ring", state.showMarker ? "On" : "Off", function () {
           state.showMarker = !state.showMarker;
           save("showMarker", state.showMarker);
           drawCursor();
+          renderSheet();
         }),
       );
     }
-    var inv = button(state.invertScroll ? "Reverse scroll" : "Natural scroll", "Flip scroll direction", function () {
-      state.invertScroll = !state.invertScroll;
-      save("invertScroll", state.invertScroll);
-    });
-    bar.appendChild(inv);
-    bar.appendChild(
-      button("×", "Hide touch controls", function () {
-        state.collapsed = true;
-        save("collapsed", true);
+    g1.appendChild(
+      sheetButton("Scrolling", state.invertScroll ? "Reversed" : "Natural", function () {
+        state.invertScroll = !state.invertScroll;
+        save("invertScroll", state.invertScroll);
+        renderSheet();
       }),
     );
+    if (state.zoom > 1 || state.tx || state.ty) {
+      g1.appendChild(
+        sheetButton("Reset zoom", null, function () {
+          closeSheet();
+          resetZoom();
+        }),
+      );
+    }
+    var g2 = el("div", "jkt-group");
+    g2.appendChild(sheetButton("Cancel", null, closeSheet, "jkt-cancel"));
+    panel.appendChild(g1);
+    panel.appendChild(g2);
+    sheet.appendChild(panel);
   }
+
+  // Keys the iPhone keyboard lacks, shown just above it while it is open.
+  var KEY_BAR = [
+    { label: "Esc", code: "Escape" },
+    { label: "Tab", code: "Tab" },
+    { label: "Ctrl", mod: "ControlLeft" },
+    { label: "Alt", mod: "AltLeft" },
+    { label: "Win", mod: "MetaLeft" },
+    { label: "Shift", mod: "ShiftLeft" },
+    { label: "←", code: "ArrowLeft" },
+    { label: "↑", code: "ArrowUp" },
+    { label: "↓", code: "ArrowDown" },
+    { label: "→", code: "ArrowRight" },
+    { label: "Del", code: "Delete" },
+    { label: "Home", code: "Home" },
+    { label: "End", code: "End" },
+    { label: "PgUp", code: "PageUp" },
+    { label: "PgDn", code: "PageDown" },
+    { label: "F1", code: "F1" },
+    { label: "F2", code: "F2" },
+    { label: "F3", code: "F3" },
+    { label: "F4", code: "F4" },
+    { label: "F5", code: "F5" },
+    { label: "F6", code: "F6" },
+    { label: "F7", code: "F7" },
+    { label: "F8", code: "F8" },
+    { label: "F9", code: "F9" },
+    { label: "F10", code: "F10" },
+    { label: "F11", code: "F11" },
+    { label: "F12", code: "F12" },
+    { label: "Ctrl+Alt+Del", combo: ["ControlLeft", "AltLeft", "Delete"] },
+    { label: "Done", hide: true },
+  ];
+
+  function renderKeyBar() {
+    if (!keyBar) return;
+    keyBar.style.display = state.keyboardOpen ? "flex" : "none";
+    if (!state.keyboardOpen) return;
+    keyBar.textContent = "";
+    KEY_BAR.forEach(function (k) {
+      var b = el("button", k.mod && state.sticky[k.mod] ? "jkt-on" : "", k.label);
+      b.type = "button";
+      // Act on touchend and cancel the default, so the tap never takes focus
+      // from the text field (which would close the keyboard).
+      var touchedAt = 0;
+      b.addEventListener("touchstart", function (ev) {
+        ev.preventDefault();
+      }, { passive: false });
+      b.addEventListener("touchend", function (ev) {
+        ev.preventDefault();
+        touchedAt = Date.now();
+        act();
+      }, { passive: false });
+      b.addEventListener("mousedown", function (ev) {
+        ev.preventDefault();
+      });
+      b.addEventListener("click", function (ev) {
+        ev.preventDefault();
+        if (Date.now() - touchedAt < 800) return;
+        act();
+      });
+      function act() {
+        if (k.hide) return hideKeyboard();
+        if (k.mod) {
+          state.sticky[k.mod] = !state.sticky[k.mod];
+          renderKeyBar();
+          return;
+        }
+        if (k.combo) {
+          k.combo.forEach(function (c) {
+            keyEvent("keydown", c, c);
+          });
+          k.combo.slice().reverse().forEach(function (c) {
+            keyEvent("keyup", c, c);
+          });
+          return;
+        }
+        tapKey(k.code, k.code, false);
+      }
+      keyBar.appendChild(b);
+    });
+    positionKeyBar();
+  }
+
+  function positionKeyBar() {
+    if (!keyBar || !state.keyboardOpen) return;
+    var h = keyBar.offsetHeight || 48;
+    keyBar.style.transform = "translateY(" + (visibleBottom() - h) + "px)";
+  }
+
+  function onViewportChange() {
+    positionKeyBar();
+    if (zoomEl) applyZoom();
+    if (state.keyboardOpen) ensureCursorVisible();
+    drawCursor();
+  }
+
+  var MENU_ICON =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">' +
+    '<path d="M5 7h14M5 12h14M5 17h14"/></svg>';
 
   function mount() {
     if (!document.body) return;
     if (!cursorEl) {
-      cursorEl = document.createElement("div");
+      cursorEl = el("div");
       cursorEl.id = "jkt-cursor";
       document.body.appendChild(cursorEl);
     }
-    if (!bar && isTouchDevice) {
-      bar = document.createElement("div");
-      bar.id = "jkt-bar";
-      document.body.appendChild(bar);
-      renderBar();
+    if (isTouchDevice && !fab) {
+      fab = el("button");
+      fab.id = "jkt-fab";
+      fab.type = "button";
+      fab.setAttribute("aria-label", "Touch menu");
+      fab.innerHTML = MENU_ICON; // fixed markup, no user data
+      fab.addEventListener("click", function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openSheet();
+      });
+      sheet = el("div");
+      sheet.id = "jkt-sheet";
+      sheet.addEventListener("click", function (ev) {
+        if (ev.target === sheet) closeSheet();
+      });
+      keyBar = el("div");
+      keyBar.id = "jkt-keys";
+      createInput();
+      document.body.appendChild(fab);
+      document.body.appendChild(sheet);
+      document.body.appendChild(keyBar);
     }
-    // Keep the toolbar above the app and only show it on the remote-control screen.
-    if (bar) {
-      if (!bar.isConnected) document.body.appendChild(bar);
-      bar.style.display = getVideo() ? "flex" : "none";
-    }
-    if (cursorEl && !cursorEl.isConnected) document.body.appendChild(cursorEl);
+    // Keep our elements attached and only show the menu on the remote-control screen.
+    [cursorEl, fab, sheet, keyBar, input].forEach(function (n) {
+      if (n && !n.isConnected) document.body.appendChild(n);
+    });
+    var video = getVideo();
+    if (fab) fab.style.display = video ? "flex" : "none";
+    if (!video && state.keyboardOpen) hideKeyboard();
+    getZoomEl();
     drawCursor();
   }
 
@@ -596,8 +1094,14 @@
     mount();
   }
   setInterval(mount, 500);
-  window.addEventListener("resize", drawCursor);
-  window.addEventListener("orientationchange", drawCursor);
+  window.addEventListener("resize", onViewportChange);
+  window.addEventListener("orientationchange", function () {
+    setTimeout(onViewportChange, 300);
+  });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", onViewportChange);
+    window.visualViewport.addEventListener("scroll", onViewportChange);
+  }
 
   // Exposed for debugging from the browser console.
   window.__jetkvmTouchState = state;

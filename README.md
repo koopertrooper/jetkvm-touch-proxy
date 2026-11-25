@@ -1,6 +1,6 @@
 # JetKVM touch proxy
 
-A small Docker container that sits in front of your JetKVM and makes its web UI usable from an iPhone or iPad. It loads the normal JetKVM page from your device and adds a script that turns finger gestures into mouse input. Nothing on the JetKVM changes, and you can keep its automatic updates on.
+A small Docker container that sits in front of your JetKVM and makes its web UI usable from an iPhone or iPad. It loads the normal JetKVM page from your device and adds a script that turns finger gestures into mouse input and lets you type with the phone's own keyboard. Nothing on the JetKVM changes, and you can keep its automatic updates on.
 
 This is an unofficial community project. It is not made by or affiliated with JetKVM.
 
@@ -16,8 +16,22 @@ This is an unofficial community project. It is not made by or affiliated with Je
 | Long press | Right click | Right click |
 | Two-finger drag | Scroll wheel (up/down and left/right) | Scroll wheel |
 | Three-finger tap | Middle click | Middle click |
+| Pinch | Zooms the picture in or out around your fingers | Same |
 
-In trackpad mode a small hollow ring shows where the cursor is going while you move, then fades so the real pointer stays visible. A small toolbar in the bottom-right corner switches the mode, changes trackpad speed (0.6x to 2.4x), turns the ring on or off, flips the scroll direction, and hides itself (tap "Touch" to bring it back). Settings are remembered per browser.
+In trackpad mode a small hollow ring shows where the cursor is going while you move, then fades so the real pointer stays visible. When you zoom in, the picture pans to follow the cursor.
+
+## Menu and keyboard
+
+A round blue button in the bottom-right corner opens a menu:
+
+- **Show keyboard** opens the iPhone keyboard. Whatever you type is sent to the remote computer. A bar above the keyboard adds the keys the phone lacks: Esc, Tab, arrows, Del, Home, End, Page Up/Down, F1 to F12 and Ctrl+Alt+Del. Ctrl, Alt, Win and Shift stay held for the next key you press, so Ctrl then C sends Ctrl+C. Tap "Done" to close the keyboard. If the keyboard covers the cursor, the picture moves up so you can see what you're typing into.
+- **Touch mode** switches between Trackpad and Direct.
+- **Trackpad speed** cycles from 0.6x to 2.4x.
+- **Cursor ring** turns the position ring on or off.
+- **Scrolling** flips the scroll direction.
+- **Reset zoom** appears when you're zoomed in.
+
+Settings are remembered per browser. Typed characters are sent as US keyboard keys, so set the remote computer's keyboard layout to US English for symbols to come out right.
 
 A real mouse on a computer passes through untouched, so you can use the same address from a PC. To try the gestures on a PC, open Chrome DevTools and turn on device emulation.
 
