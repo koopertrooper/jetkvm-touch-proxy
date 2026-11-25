@@ -1,0 +1,11 @@
+services:
+  jetkvm-touch:
+    build: .
+    image: jetkvm-touch-proxy
+    container_name: jetkvm-touch
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Your JetKVM's address on your network
+      JETKVM_URL: "http://192.168.1.50"
