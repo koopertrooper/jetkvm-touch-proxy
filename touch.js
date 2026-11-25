@@ -760,6 +760,8 @@
       resetInput();
     });
     input.addEventListener("focus", function () {
+      if (sheet && sheet.style.display !== "none") closeSheet();
+      parkInput();
       state.keyboardOpen = true;
       renderKeyBar();
       setTimeout(onViewportChange, 300);
@@ -773,7 +775,26 @@
     document.body.appendChild(input);
   }
 
-  // Must run inside a tap handler: iOS only opens the keyboard for a user action.
+  function parkInput() {
+    if (!input) return;
+    input.style.left = "0px";
+    input.style.top = "0px";
+    input.style.width = "1px";
+    input.style.height = "1px";
+    input.style.pointerEvents = "none";
+  }
+
+  function overlayInputOn(target) {
+    if (!input || !target) return;
+    var r = target.getBoundingClientRect();
+    input.style.left = r.left + "px";
+    input.style.top = r.top + "px";
+    input.style.width = r.width + "px";
+    input.style.height = r.height + "px";
+    input.style.pointerEvents = "auto";
+  }
+
+  // Fallback for browsers that allow opening the keyboard from script.
   function showKeyboard() {
     if (!input) return;
     resetInput();
@@ -789,15 +810,18 @@
     "video{touch-action:none!important;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}",
     "#jkt-cursor{position:fixed;left:0;top:0;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;box-sizing:border-box;",
     "background:transparent;border:1.5px solid rgba(255,255,255,.9);box-shadow:0 0 0 1px rgba(0,0,0,.6);",
-    "pointer-events:none;z-index:2147483645;display:none;opacity:0;transition:opacity .3s}",
+    "pointer-events:none;z-index:2147483644;display:none;opacity:0;transition:opacity .3s}",
     // Hidden text field: 16px font stops iOS from zooming the page when it gets focus.
+    // iOS only opens its keyboard reliably when the user taps a text field
+    // directly, so while the menu is open the field sits over "Show keyboard".
     "#jkt-input{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;font-size:16px;border:0;padding:0;margin:0;",
-    "resize:none;background:transparent;color:transparent;caret-color:transparent;z-index:-1}",
+    "resize:none;background:transparent;color:transparent;caret-color:transparent;z-index:2147483647;pointer-events:none;",
+    "-webkit-user-select:text;user-select:text;outline:none;-webkit-tap-highlight-color:transparent}",
     "#jkt-fab{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom));width:52px;height:52px;border-radius:50%;",
-    "border:0;background:#2563eb;color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.35);z-index:2147483646;display:none;",
+    "border:0;background:#2563eb;color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.35);z-index:2147483645;display:none;",
     "align-items:center;justify-content:center;touch-action:manipulation;-webkit-tap-highlight-color:transparent;cursor:pointer;padding:0}",
     "#jkt-fab svg{width:24px;height:24px}",
-    "#jkt-sheet{position:fixed;inset:0;z-index:2147483647;display:none;background:rgba(0,0,0,.35);",
+    "#jkt-sheet{position:fixed;inset:0;z-index:2147483646;display:none;background:rgba(0,0,0,.35);",
     "font:400 19px/1.2 -apple-system,system-ui,sans-serif;touch-action:manipulation;-webkit-user-select:none;user-select:none}",
     "#jkt-sheet .jkt-panel{position:absolute;left:8px;right:8px;bottom:calc(8px + env(safe-area-inset-bottom));max-width:480px;margin:0 auto}",
     "#jkt-sheet .jkt-group{background:rgba(44,44,46,.96);border-radius:14px;overflow:hidden;margin-top:8px}",
@@ -807,7 +831,7 @@
     "#jkt-sheet button .jkt-val{color:rgba(255,255,255,.55)}",
     "#jkt-sheet .jkt-cancel{font-weight:600}",
     "#jkt-sheet .jkt-warn{color:#fca5a5;font-size:14px;padding:12px;text-align:center;line-height:1.35}",
-    "#jkt-keys{position:fixed;left:0;right:0;top:0;z-index:2147483646;display:none;gap:6px;padding:6px 8px;overflow-x:auto;",
+    "#jkt-keys{position:fixed;left:0;right:0;top:0;z-index:2147483645;display:none;gap:6px;padding:6px 8px;overflow-x:auto;",
     "background:rgba(28,28,30,.96);font:500 15px/1 -apple-system,system-ui,sans-serif;touch-action:manipulation;",
     "-webkit-user-select:none;user-select:none;scrollbar-width:none}",
     "#jkt-keys::-webkit-scrollbar{display:none}",
@@ -877,13 +901,16 @@
     return b;
   }
 
+  var showKeyboardBtn = null;
+
   function closeSheet() {
     if (sheet) sheet.style.display = "none";
+    if (!state.keyboardOpen) parkInput();
   }
 
   function openSheet() {
-    renderSheet();
     sheet.style.display = "block";
+    renderSheet();
   }
 
   function renderSheet() {
@@ -893,13 +920,12 @@
     if (mouseModeIsRelative()) {
       g1.appendChild(el("div", "jkt-warn", "Touch control needs Mouse mode set to Absolute in the JetKVM settings."));
     }
-    g1.appendChild(
-      sheetButton(state.keyboardOpen ? "Hide keyboard" : "Show keyboard", null, function () {
-        closeSheet();
-        if (state.keyboardOpen) hideKeyboard();
-        else showKeyboard();
-      }),
-    );
+    showKeyboardBtn = sheetButton(state.keyboardOpen ? "Hide keyboard" : "Show keyboard", null, function () {
+      closeSheet();
+      if (state.keyboardOpen) hideKeyboard();
+      else showKeyboard();
+    });
+    g1.appendChild(showKeyboardBtn);
     g1.appendChild(
       sheetButton("Touch mode", state.mode === "trackpad" ? "Trackpad" : "Direct", function () {
         state.mode = state.mode === "trackpad" ? "direct" : "trackpad";
@@ -945,6 +971,10 @@
     panel.appendChild(g1);
     panel.appendChild(g2);
     sheet.appendChild(panel);
+    // Put the hidden text field right over "Show keyboard", so the tap itself
+    // focuses it and iOS opens the keyboard.
+    if (!state.keyboardOpen && sheet.style.display !== "none") overlayInputOn(showKeyboardBtn);
+    else parkInput();
   }
 
   // Keys the iPhone keyboard lacks, shown just above it while it is open.
