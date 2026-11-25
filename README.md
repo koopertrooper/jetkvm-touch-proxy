@@ -24,7 +24,7 @@ In trackpad mode a small hollow ring shows where the cursor is going while you m
 
 A round blue button in the bottom-right corner opens a menu:
 
-- **Show keyboard** opens the iPhone keyboard. Whatever you type is sent to the remote computer. A bar above the keyboard adds the keys the phone lacks: Esc, Tab, arrows, Del, Home, End, Page Up/Down, F1 to F12 and Ctrl+Alt+Del. Ctrl, Alt, Win and Shift stay held for the next key you press, so Ctrl then C sends Ctrl+C. Tap "Done" to close the keyboard. If the keyboard covers the cursor, the picture moves up so you can see what you're typing into.
+- **Show keyboard** opens the iPhone keyboard. Whatever you type is sent to the remote computer. A row of keys above the keyboard adds the keys the phone lacks. Tap "•••" to flip between pages: Esc, Tab, Ctrl, Alt and arrows; then Win, Shift, Del, Home, End, Page Up/Down and Ctrl+Alt+Del; then F1 to F12. Ctrl, Alt, Win and Shift stay held for the next key you press, so Ctrl then C sends Ctrl+C. Tap "⌄" to close the keyboard. If the keyboard covers the cursor, the picture moves up so you can see what you're typing into.
 - **Touch mode** switches between Trackpad and Direct.
 - **Trackpad speed** cycles from 0.6x to 2.4x.
 - **Cursor ring** turns the position ring on or off.

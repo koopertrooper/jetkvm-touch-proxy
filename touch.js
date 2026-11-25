@@ -249,10 +249,13 @@
     return zoomEl;
   }
 
-  // Bottom of what you can see, in client coordinates (above the iOS keyboard).
+  // Bottom of what you can see, in client coordinates (above the iOS
+  // keyboard and our key bar).
   function visibleBottom() {
     var vv = window.visualViewport;
-    return vv ? vv.offsetTop + vv.height : window.innerHeight;
+    var b = vv ? vv.offsetTop + vv.height : window.innerHeight;
+    if (state.keyboardOpen && keyBar) b -= keyBar.offsetHeight;
+    return b;
   }
 
   function clampPan() {
@@ -900,13 +903,19 @@
     "#jkt-input{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;font-size:16px;border:0;padding:0;margin:0;",
     "resize:none;background:transparent;color:transparent;caret-color:transparent;z-index:2147483647;pointer-events:none;",
     "-webkit-user-select:text;user-select:text;outline:none;-webkit-tap-highlight-color:transparent}",
-    "#jkt-fab{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom));width:52px;height:52px;border-radius:50%;",
+    // The button, menu and key bar are placed by script inside the visible
+    // area (window.visualViewport), which differs from the page size on iOS.
+    "#jkt-fab{position:fixed;left:0;top:0;width:48px;height:48px;border-radius:50%;",
     "border:0;background:#2563eb;color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.35);z-index:2147483645;display:none;",
     "align-items:center;justify-content:center;touch-action:manipulation;-webkit-tap-highlight-color:transparent;cursor:pointer;padding:0}",
     "#jkt-fab svg{width:24px;height:24px}",
-    "#jkt-sheet{position:fixed;inset:0;z-index:2147483646;display:none;background:rgba(0,0,0,.35);",
+    "#jkt-sheet{position:fixed;left:0;top:0;width:100%;height:100%;z-index:2147483646;display:none;background:rgba(0,0,0,.35);",
     "font:400 19px/1.2 -apple-system,system-ui,sans-serif;touch-action:manipulation;-webkit-user-select:none;user-select:none}",
-    "#jkt-sheet .jkt-panel{position:absolute;left:8px;right:8px;bottom:calc(8px + env(safe-area-inset-bottom));max-width:480px;margin:0 auto}",
+    "#jkt-sheet .jkt-panel{position:absolute;left:8px;right:8px;bottom:8px;max-width:480px;margin:0 auto;",
+    "max-height:calc(100% - 16px);overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}",
+    "#jkt-sheet.jkt-compact{font-size:16px}",
+    "#jkt-sheet.jkt-compact button{padding:10px 12px}",
+    "#jkt-sheet.jkt-compact .jkt-group{margin-top:6px}",
     "#jkt-sheet .jkt-group{background:rgba(44,44,46,.96);border-radius:14px;overflow:hidden;margin-top:8px}",
     "#jkt-sheet button{display:block;width:100%;border:0;background:transparent;color:#3b82f6;font:inherit;padding:16px 12px;",
     "text-align:center;-webkit-tap-highlight-color:transparent;cursor:pointer}",
@@ -914,12 +923,13 @@
     "#jkt-sheet button .jkt-val{color:rgba(255,255,255,.55)}",
     "#jkt-sheet .jkt-cancel{font-weight:600}",
     "#jkt-sheet .jkt-warn{color:#fca5a5;font-size:14px;padding:12px;text-align:center;line-height:1.35}",
-    "#jkt-keys{position:fixed;left:0;right:0;top:0;z-index:2147483645;display:none;gap:6px;padding:6px 8px;overflow-x:auto;",
-    "background:rgba(28,28,30,.96);font:500 15px/1 -apple-system,system-ui,sans-serif;touch-action:manipulation;",
-    "-webkit-user-select:none;user-select:none;scrollbar-width:none}",
-    "#jkt-keys::-webkit-scrollbar{display:none}",
-    "#jkt-keys button{flex:0 0 auto;min-width:40px;height:36px;border:0;border-radius:6px;background:#48484a;color:#fff;font:inherit;",
-    "padding:0 10px;-webkit-tap-highlight-color:transparent;cursor:pointer}",
+    // One row of keys that always fits the width; a "more" key flips pages.
+    "#jkt-keys{position:fixed;left:0;top:0;width:100%;box-sizing:border-box;z-index:2147483645;display:none;gap:4px;padding:5px 4px;",
+    "background:rgba(28,28,30,.97);font:500 14px/1 -apple-system,system-ui,sans-serif;touch-action:none;",
+    "-webkit-user-select:none;user-select:none}",
+    "#jkt-keys button{flex:1 1 0;min-width:0;height:38px;border:0;border-radius:6px;background:#48484a;color:#fff;font:inherit;",
+    "padding:0 1px;white-space:nowrap;overflow:hidden;-webkit-tap-highlight-color:transparent;cursor:pointer}",
+    "#jkt-keys button.jkt-aux{background:#2c2c2e}",
     "#jkt-keys button.jkt-on{background:#2563eb}",
   ].join("");
   (document.head || document.documentElement).appendChild(style);
@@ -993,6 +1003,7 @@
 
   function openSheet() {
     sheet.style.display = "block";
+    layoutOverlays();
     renderSheet();
   }
 
@@ -1064,6 +1075,9 @@
     panel.appendChild(g1);
     panel.appendChild(g2);
     sheet.appendChild(panel);
+    panel.addEventListener("scroll", function () {
+      if (!state.keyboardOpen) overlayInputOn(showKeyboardBtn);
+    });
     // Put the hidden text field right over "Show keyboard", so the tap itself
     // focuses it and iOS opens the keyboard.
     if (!state.keyboardOpen && sheet.style.display !== "none") overlayInputOn(showKeyboardBtn);
@@ -1071,45 +1085,61 @@
   }
 
   // Keys the iPhone keyboard lacks, shown just above it while it is open.
-  var KEY_BAR = [
-    { label: "Esc", code: "Escape" },
-    { label: "Tab", code: "Tab" },
-    { label: "Ctrl", mod: "ControlLeft" },
-    { label: "Alt", mod: "AltLeft" },
-    { label: "Win", mod: "MetaLeft" },
-    { label: "Shift", mod: "ShiftLeft" },
-    { label: "←", code: "ArrowLeft" },
-    { label: "↑", code: "ArrowUp" },
-    { label: "↓", code: "ArrowDown" },
-    { label: "→", code: "ArrowRight" },
-    { label: "Del", code: "Delete" },
-    { label: "Home", code: "Home" },
-    { label: "End", code: "End" },
-    { label: "PgUp", code: "PageUp" },
-    { label: "PgDn", code: "PageDown" },
-    { label: "F1", code: "F1" },
-    { label: "F2", code: "F2" },
-    { label: "F3", code: "F3" },
-    { label: "F4", code: "F4" },
-    { label: "F5", code: "F5" },
-    { label: "F6", code: "F6" },
-    { label: "F7", code: "F7" },
-    { label: "F8", code: "F8" },
-    { label: "F9", code: "F9" },
-    { label: "F10", code: "F10" },
-    { label: "F11", code: "F11" },
-    { label: "F12", code: "F12" },
-    { label: "Ctrl+Alt+Del", combo: ["ControlLeft", "AltLeft", "Delete"] },
-    { label: "Done", hide: true },
+  // Each page fits one row on the narrowest iPhones; "•••" flips pages and
+  // "⌄" closes the keyboard.
+  var KEY_PAGES = [
+    [
+      { label: "Esc", code: "Escape" },
+      { label: "Tab", code: "Tab" },
+      { label: "Ctrl", mod: "ControlLeft" },
+      { label: "Alt", mod: "AltLeft" },
+      { label: "\u2190", code: "ArrowLeft" },
+      { label: "\u2191", code: "ArrowUp" },
+      { label: "\u2193", code: "ArrowDown" },
+      { label: "\u2192", code: "ArrowRight" },
+    ],
+    [
+      { label: "Win", mod: "MetaLeft" },
+      { label: "Shift", mod: "ShiftLeft" },
+      { label: "Del", code: "Delete" },
+      { label: "Home", code: "Home" },
+      { label: "End", code: "End" },
+      { label: "PgUp", code: "PageUp" },
+      { label: "PgDn", code: "PageDown" },
+      { label: "C-A-Del", combo: ["ControlLeft", "AltLeft", "Delete"] },
+    ],
+    [
+      { label: "F1", code: "F1" },
+      { label: "F2", code: "F2" },
+      { label: "F3", code: "F3" },
+      { label: "F4", code: "F4" },
+      { label: "F5", code: "F5" },
+      { label: "F6", code: "F6" },
+    ],
+    [
+      { label: "F7", code: "F7" },
+      { label: "F8", code: "F8" },
+      { label: "F9", code: "F9" },
+      { label: "F10", code: "F10" },
+      { label: "F11", code: "F11" },
+      { label: "F12", code: "F12" },
+    ],
   ];
+  var keyPage = 0;
 
   function renderKeyBar() {
     if (!keyBar) return;
     keyBar.style.display = state.keyboardOpen ? "flex" : "none";
     if (!state.keyboardOpen) return;
     keyBar.textContent = "";
-    KEY_BAR.forEach(function (k) {
-      var b = el("button", k.mod && state.sticky[k.mod] ? "jkt-on" : "", k.label);
+    var keys = KEY_PAGES[keyPage].concat([
+      { label: "\u2022\u2022\u2022", page: true, aux: true },
+      { label: "\u2304", hide: true, aux: true },
+    ]);
+    keys.forEach(function (k) {
+      var b = el("button", k.mod && state.sticky[k.mod] ? "jkt-on" : k.aux ? "jkt-aux" : "", k.label);
+      if (k.page) b.setAttribute("aria-label", "More keys");
+      if (k.hide) b.setAttribute("aria-label", "Hide keyboard");
       b.type = "button";
       // Act on touchend and cancel the default, so the tap never takes focus
       // from the text field (which would close the keyboard).
@@ -1132,6 +1162,11 @@
       });
       function act() {
         if (k.hide) return hideKeyboard();
+        if (k.page) {
+          keyPage = (keyPage + 1) % KEY_PAGES.length;
+          renderKeyBar();
+          return;
+        }
         if (k.mod) {
           state.sticky[k.mod] = !state.sticky[k.mod];
           renderKeyBar();
@@ -1153,14 +1188,45 @@
     positionKeyBar();
   }
 
+  // The part of the page you can actually see. On iOS this can be smaller
+  // than, and offset from, the page itself (browser bars, keyboard, zoom).
+  function visibleRect() {
+    var vv = window.visualViewport;
+    if (vv) return { left: vv.offsetLeft, top: vv.offsetTop, width: vv.width, height: vv.height };
+    return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+  }
+
+  function layoutOverlays() {
+    var v = visibleRect();
+    var bottom = v.top + v.height;
+    if (keyBar && state.keyboardOpen) {
+      keyBar.style.left = v.left + "px";
+      keyBar.style.width = v.width + "px";
+      var h = keyBar.offsetHeight || 48;
+      keyBar.style.top = bottom - h + "px";
+      bottom -= h;
+    }
+    if (fab) {
+      // Always sit above the key bar, inside the visible area.
+      fab.style.left = v.left + v.width - 48 - 12 + "px";
+      fab.style.top = bottom - 48 - 12 + "px";
+    }
+    if (sheet && sheet.style.display !== "none") {
+      sheet.style.left = v.left + "px";
+      sheet.style.top = v.top + "px";
+      sheet.style.width = v.width + "px";
+      sheet.style.height = v.height + "px";
+      sheet.classList.toggle("jkt-compact", v.height < 560);
+    }
+  }
+
   function positionKeyBar() {
-    if (!keyBar || !state.keyboardOpen) return;
-    var h = keyBar.offsetHeight || 48;
-    keyBar.style.transform = "translateY(" + (visibleBottom() - h) + "px)";
+    layoutOverlays();
   }
 
   function onViewportChange() {
-    positionKeyBar();
+    layoutOverlays();
+    if (sheet && sheet.style.display !== "none" && !state.keyboardOpen) overlayInputOn(showKeyboardBtn);
     if (zoomEl) applyZoom();
     if (state.keyboardOpen) ensureCursorVisible();
     drawCursor();
@@ -1209,6 +1275,7 @@
     if (!video && state.keyboardOpen) hideKeyboard();
     applyBars();
     getZoomEl();
+    layoutOverlays();
     drawCursor();
   }
 
