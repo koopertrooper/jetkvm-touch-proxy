@@ -29,6 +29,7 @@ A round blue button in the bottom-right corner opens a menu:
 - **Trackpad speed** cycles from 0.6x to 2.4x.
 - **Cursor ring** turns the position ring on or off.
 - **Scrolling** flips the scroll direction.
+- **JetKVM toolbars** hides JetKVM's own header, action bar and status bar so the remote screen fills the phone. By default they're hidden in landscape and shown in portrait. You can also set them to always show or always hide.
 - **Reset zoom** appears when you're zoomed in.
 
 Settings are remembered per browser. Typed characters are sent as US keyboard keys, so set the remote computer's keyboard layout to US English for symbols to come out right.
@@ -51,7 +52,7 @@ docker build -t jetkvm-touch-proxy .
 docker run -d --restart unless-stopped -p 8080:8080 -e JETKVM_URL=http://192.168.1.50 --name jetkvm-touch jetkvm-touch-proxy
 ```
 
-Tip: in Safari, use Share, then "Add to Home Screen". It opens without Safari's address bar, which gives the video more room.
+Tip: in Safari, use Share, then "Add to Home Screen", and open it from there. It runs full screen without Safari's address bar, which gives the remote screen much more room, especially in landscape.
 
 ## Things to know
 

@@ -53,6 +53,7 @@
     speedIndex: load("speedIndex", 1),
     invertScroll: load("invertScroll", false),
     showMarker: load("showMarker", true),
+    bars: load("bars", "auto"), // JetKVM's own top and bottom bars: "auto" | "shown" | "hidden"
     nx: 0.5, // cursor position, 0..1 across the remote screen
     ny: 0.5,
     buttons: 0,
@@ -332,6 +333,72 @@
     state.tx = c.x - p.originX - state.zoom * p.localX;
     state.ty = c.y - p.originY - state.zoom * p.localY;
     applyZoom();
+  }
+
+  // ---- JetKVM's own bars ------------------------------------------------
+  // On a phone in landscape, JetKVM's header, action bar and status bar take
+  // a third of the height. Hide them so the remote screen gets the room.
+  var hiddenBars = [];
+
+  function barsShouldHide() {
+    if (state.bars === "hidden") return true;
+    if (state.bars === "shown") return false;
+    return isTouchDevice && window.innerWidth > window.innerHeight && window.innerHeight < 600;
+  }
+
+  // Grid ancestors of the video: the one with [action bar, video, status bar]
+  // and the one with [header, body].
+  function findBars(video) {
+    var found = [];
+    var n = video.parentElement;
+    var depth = 0;
+    while (n && n !== document.body && depth < 20 && found.length < 2) {
+      var parent = n.parentElement;
+      if (parent && getComputedStyle(parent).display === "grid") {
+        var kids = Array.prototype.slice.call(parent.children);
+        var idx = kids.indexOf(n);
+        if (kids.length === 3 && idx === 1) found.push({ grid: parent, bars: [kids[0], kids[2]] });
+        else if (kids.length === 2 && idx === 1 && found.length === 1) found.push({ grid: parent, bars: [kids[0]] });
+      }
+      n = parent;
+      depth++;
+    }
+    return found;
+  }
+
+  function restoreBars() {
+    hiddenBars.forEach(function (h) {
+      if (h.rows !== undefined) h.el.style.gridTemplateRows = h.rows;
+      else h.el.style.display = h.display;
+    });
+    hiddenBars = [];
+  }
+
+  function applyBars() {
+    var video = getVideo();
+    var hide = video && barsShouldHide();
+    if (!hide) {
+      if (hiddenBars.length) {
+        restoreBars();
+        setTimeout(onViewportChange, 50);
+      }
+      return;
+    }
+    var changed = false;
+    findBars(video).forEach(function (g) {
+      g.bars.forEach(function (b) {
+        if (b.style.display === "none") return;
+        hiddenBars.push({ el: b, display: b.style.display });
+        b.style.display = "none";
+        changed = true;
+      });
+      if (g.grid.style.gridTemplateRows !== "minmax(0px, 1fr)") {
+        hiddenBars.push({ el: g.grid, display: g.grid.style.display, rows: g.grid.style.gridTemplateRows });
+        g.grid.style.gridTemplateRows = "minmax(0px, 1fr)";
+        changed = true;
+      }
+    });
+    if (changed) setTimeout(onViewportChange, 50);
   }
 
   // ---- Gesture recognition ----------------------------------------------
@@ -711,20 +778,36 @@
     input.setAttribute("aria-label", "Remote keyboard input");
     resetInput();
 
-    // Keep the field's own key events away from the JetKVM page, which would
-    // otherwise cancel them before the text arrives.
+    // The JetKVM page keeps a focus trap on its video area that pulls focus
+    // back as soon as anything else gets it, which closed the keyboard at
+    // once. Window capture listeners run before the trap's document
+    // listeners, so stop the field's focus and key events there. This also
+    // keeps its key events away from the page, which would cancel them
+    // before the text arrives.
+    window.addEventListener(
+      "focusin",
+      function (e) {
+        if (e.target === input) e.stopImmediatePropagation();
+      },
+      true,
+    );
     ["keydown", "keyup", "keypress"].forEach(function (t) {
-      input.addEventListener(t, function (e) {
-        e.stopPropagation();
-        // Hardware keyboards and some iOS keys arrive only as keydown.
-        if (t === "keydown" && e.isTrusted) {
-          var special = { Backspace: 1, Enter: 1, Tab: 1, Escape: 1, ArrowLeft: 1, ArrowRight: 1, ArrowUp: 1, ArrowDown: 1 };
-          if (special[e.key] && e.key !== "Backspace" && e.key !== "Enter") {
-            e.preventDefault();
-            tapKey(e.key, e.key, false);
+      window.addEventListener(
+        t,
+        function (e) {
+          if (e.target !== input) return;
+          e.stopImmediatePropagation();
+          // Hardware keyboards and some iOS keys arrive only as keydown.
+          if (t === "keydown" && e.isTrusted) {
+            var special = { Tab: 1, Escape: 1, ArrowLeft: 1, ArrowRight: 1, ArrowUp: 1, ArrowDown: 1 };
+            if (special[e.key]) {
+              e.preventDefault();
+              tapKey(e.key, e.key, false);
+            }
           }
-        }
-      });
+        },
+        true,
+      );
     });
 
     input.addEventListener("beforeinput", function (e) {
@@ -958,6 +1041,16 @@
         renderSheet();
       }),
     );
+    var BAR_LABELS = { auto: "Hide in landscape", hidden: "Always hide", shown: "Always show" };
+    var BAR_NEXT = { auto: "hidden", hidden: "shown", shown: "auto" };
+    g1.appendChild(
+      sheetButton("JetKVM toolbars", BAR_LABELS[state.bars] || BAR_LABELS.auto, function () {
+        state.bars = BAR_NEXT[state.bars] || "hidden";
+        save("bars", state.bars);
+        applyBars();
+        renderSheet();
+      }),
+    );
     if (state.zoom > 1 || state.tx || state.ty) {
       g1.appendChild(
         sheetButton("Reset zoom", null, function () {
@@ -1114,6 +1207,7 @@
     var video = getVideo();
     if (fab) fab.style.display = video ? "flex" : "none";
     if (!video && state.keyboardOpen) hideKeyboard();
+    applyBars();
     getZoomEl();
     drawCursor();
   }
@@ -1124,7 +1218,10 @@
     mount();
   }
   setInterval(mount, 500);
-  window.addEventListener("resize", onViewportChange);
+  window.addEventListener("resize", function () {
+    applyBars();
+    onViewportChange();
+  });
   window.addEventListener("orientationchange", function () {
     setTimeout(onViewportChange, 300);
   });
